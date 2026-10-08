@@ -1,5 +1,6 @@
 """Gemini wrapper with guardrails and a deterministic fallback."""
 import os
+import time
 
 SYSTEM_PROMPT = """You are a procurement analyst assistant inside a vendor-scoring tool.
 RULES:
@@ -14,7 +15,9 @@ RULES:
 
 _CANDIDATES = [os.getenv("GEMINI_MODEL"), "gemini-3.5-flash-lite", "gemini-3.8-flash",
                "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash"]
-MODELS = list(dict.fromkeys(m for m in _CANDIDATES if m))   # drop blanks and duplicates, keep order
+MODELS = list(dict.fromkeys(m for m in _CANDIDATES if m))[:3]   # blanks/duplicates dropped; max 3 tries
+TIME_BUDGET_S = 25      # give up on the AI after this long and show the template text instead
+CALL_TIMEOUT_MS = 12000 # per-request timeout
 
 
 def build_prompt(ranked, weights, constraints, question=""):
@@ -55,10 +58,14 @@ def explain(ranked, weights, constraints, question="", api_key=None):
     try:
         from google import genai
         from google.genai import types
-        client = genai.Client(api_key=key)
+        client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=CALL_TIMEOUT_MS))
         prompt = build_prompt(ranked, weights, constraints, question)
         errs = []
+        start = time.monotonic()
         for m in MODELS:
+            if time.monotonic() - start > TIME_BUDGET_S:
+                errs.append("time limit reached")
+                break
             try:
                 resp = client.models.generate_content(
                     model=m, contents=prompt,
